@@ -37,7 +37,7 @@ func GetFileDiffs(o, r, c string) {
 		panic("Can not find pull request")
 	}
 
-	fmt.Println("Found PR", *pulls[0].Number)
+	// fmt.Println("Found PR", *pulls[0].Number)
 
 	opt := &github.ListOptions{
 		PerPage: 20,
@@ -58,7 +58,7 @@ func GetFileDiffs(o, r, c string) {
 		opt.Page = resp.NextPage
 	}
 
-	var changedDirs []string
+	changedDirs := []string{}
 	dirRegexp, err := regexp.Compile("terraform*")
 
 	if err != nil {
@@ -69,13 +69,13 @@ func GetFileDiffs(o, r, c string) {
 		filenameArray := strings.Split(*x.Filename, "/")
 		dirName := strings.Join(filenameArray[:len(filenameArray)-1], "/")
 
-		fmt.Println("Found directory", dirName)
+		// fmt.Println("Found directory", dirName)
 
 		if dirRegexp.MatchString(dirName) && !slices.Contains(changedDirs, dirName) {
-			fmt.Println("Adding directory to results", dirName)
+			// fmt.Println("Adding directory to results", dirName)
 			changedDirs = append(changedDirs, dirName)
 		} else {
-			fmt.Println("Skipping directory", dirName)
+			// fmt.Println("Skipping directory", dirName)
 		}
 	}
 	jsondat := &fileDiffs{Results: changedDirs}
