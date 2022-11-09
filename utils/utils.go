@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -11,6 +12,10 @@ import (
 	"golang.org/x/exp/slices"
 	"golang.org/x/oauth2"
 )
+
+type fileDiffs struct {
+	Results []string `json:"results"`
+}
 
 func GetFileDiffs(o, r, c string) {
 	ctx := context.Background()
@@ -65,5 +70,7 @@ func GetFileDiffs(o, r, c string) {
 			changedDirs = append(changedDirs, dirName)
 		}
 	}
-	fmt.Println(changedDirs)
+	jsondat := &fileDiffs{Results: changedDirs}
+	encjson, _ := json.Marshal(jsondat)
+	fmt.Println(string(encjson))
 }
