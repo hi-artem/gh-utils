@@ -5,10 +5,10 @@ Copyright © 2022 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"os"
-
 	"main/utils"
+	"os"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/exp/slices"
@@ -29,16 +29,22 @@ to quickly create a Cobra application.`,
 		organization, _ := cmd.Flags().GetString("organization")
 		repository, _ := cmd.Flags().GetString("repository")
 		commit, _ := cmd.Flags().GetString("commit")
-		pr := utils.GetPRNumber(organization, repository, commit)
-		diffs := utils.GetFileDiffs(organization, repository, pr)
 
-		// utils.GitClone(organization, repository, commit)
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, "ghOrganization", organization)
+		ctx = context.WithValue(ctx, "ghRepository", repository)
+		ctx = context.WithValue(ctx, "ghCommit", commit)
 
-		projects := utils.GetAtlantisProjects("./" + repository)
+		utils.InitState(&ctx)
+		fmt.Println(ctx.Value("repositoryDirectory"))
+
+		utils.GetPRNumber(&ctx)
+		diffs := utils.GetFileDiffs(&ctx)
+
+		utils.GitClone(&ctx)
+
+		projects := utils.GetAtlantisProjects(&ctx)
 		diffsProjects := []string{}
-
-		fmt.Println(projects)
-		fmt.Println(diffs)
 
 		for _, d := range diffs {
 			if slices.Contains(projects, d) {
@@ -49,7 +55,7 @@ to quickly create a Cobra application.`,
 
 		for _, value := range diffsProjects {
 			reportFile := utils.RunScan(repository + "/" + value)
-			utils.RunCommenter(reportFile, organization, repository, pr)
+			utils.RunCommenter(&ctx, reportFile)
 		}
 
 	},

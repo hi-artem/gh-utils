@@ -4,20 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/aquasecurity/defsec/pkg/extrafs"
-	"github.com/aquasecurity/defsec/pkg/formatters"
-	"github.com/aquasecurity/defsec/pkg/providers"
-	"github.com/aquasecurity/defsec/pkg/scan"
-	"github.com/aquasecurity/defsec/pkg/scanners/options"
-	scanner "github.com/aquasecurity/defsec/pkg/scanners/terraform"
 	"github.com/aquasecurity/go-git-pr-commenter/pkg/commenter"
 	ghcommenter "github.com/aquasecurity/go-git-pr-commenter/pkg/commenter/github"
 
-	"github.com/aquasecurity/tfsec/version"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -32,17 +24,20 @@ type fileDiffs struct {
 	Results []string `json:"results"`
 }
 
-func GetPRNumber(o, r, c string) int {
-	ctx := context.Background()
+func GetPRNumber(ctx *context.Context) {
+	localCtx := *ctx
+	o := localCtx.Value("ghOrganization")
+	r := localCtx.Value("ghRepository")
+	c := localCtx.Value("ghCommit")
 
 	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")},
 	)
-	tc := oauth2.NewClient(ctx, ts)
+	tc := oauth2.NewClient(*ctx, ts)
 
 	client := github.NewClient(tc)
 
-	pulls, _, err := client.PullRequests.ListPullRequestsWithCommit(ctx, o, r, c, nil)
+	pulls, _, err := client.PullRequests.ListPullRequestsWithCommit(context.TODO(), o.(string), r.(string), c.(string), nil)
 
 	if err != nil {
 		panic(err)
@@ -54,16 +49,19 @@ func GetPRNumber(o, r, c string) int {
 
 	fmt.Println("Found PR", *pulls[0].Number)
 
-	return *pulls[0].Number
+	*ctx = context.WithValue(*ctx, "ghPR", *pulls[0].Number)
 }
 
-func GetFileDiffs(o string, r string, pr int) []string {
-	ctx := context.Background()
+func GetFileDiffs(ctx *context.Context) []string {
+	localCtx := *ctx
+	o := localCtx.Value("ghOrganization")
+	r := localCtx.Value("ghRepository")
+	pr := localCtx.Value("ghPR")
 
 	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")},
 	)
-	tc := oauth2.NewClient(ctx, ts)
+	tc := oauth2.NewClient(*ctx, ts)
 
 	client := github.NewClient(tc)
 
@@ -73,7 +71,7 @@ func GetFileDiffs(o string, r string, pr int) []string {
 	}
 
 	for {
-		files, resp, err := client.PullRequests.ListFiles(ctx, o, r, pr, opt)
+		files, resp, err := client.PullRequests.ListFiles(context.TODO(), o.(string), r.(string), pr.(int), opt)
 
 		if err != nil {
 			panic(err)
@@ -108,11 +106,17 @@ func GetFileDiffs(o string, r string, pr int) []string {
 	return changedDirs
 }
 
-func GitClone(o, r, c string) {
+func GitClone(ctx *context.Context) {
+	localCtx := *ctx
+	o := localCtx.Value("ghOrganization")
+	r := localCtx.Value("ghRepository")
+	c := localCtx.Value("ghCommit")
+	repoDir := localCtx.Value("repositoryDirectory")
+
 	ghUrl := fmt.Sprintf("https://github.com/%s/%s", o, r)
 
 	fmt.Println("git clone", ghUrl)
-	repo, err := git.PlainClone("./"+r, false, &git.CloneOptions{
+	repo, err := git.PlainClone(repoDir.(string), false, &git.CloneOptions{
 		URL:      ghUrl,
 		Progress: os.Stdout,
 		Auth: &http.BasicAuth{
@@ -133,147 +137,18 @@ func GitClone(o, r, c string) {
 
 	fmt.Println("git checkout", c)
 	err = w.Checkout(&git.CheckoutOptions{
-		Hash: plumbing.NewHash(c),
+		Hash: plumbing.NewHash(c.(string)),
 	})
 
 	if err != nil {
 		panic(err)
 	}
-
 }
 
-func RunScan(path string) string {
-	var scannerOptions []options.ScannerOption
-	scannerOptions = append(
-		scannerOptions,
-		scanner.ScannerWithSingleThread(false),
-		scanner.ScannerWithStopOnHCLError(false),
-		scanner.ScannerWithStopOnRuleErrors(false),
-		scanner.ScannerWithSkipDownloaded(false),
-		scanner.ScannerWithAllDirectories(false),
-		// scanner.ScannerWithWorkspaceName("default"),
-		// scanner.ScannerWithAlternativeIDProvider(legacy.FindIDs),
-		// options.ScannerWithPolicyNamespaces("custom"),
-		scanner.ScannerWithDownloadsAllowed(true),
-		options.ScannerWithRegoOnly(false),
-		options.ScannerWithEmbeddedPolicies(true),
-	)
+func GetAtlantisProjects(ctx *context.Context) []string {
+	localCtx := *ctx
+	repoDir := localCtx.Value("repositoryDirectory")
 
-	scnr := scanner.New(scannerOptions...)
-
-	dir, err := findDirectory(path)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Determined working directory=%s", dir)
-
-	root, rel, err := splitRoot(dir)
-
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Determined path root=%s", root)
-	fmt.Println("Determined path rel=%s", rel)
-
-	results, _, err := scnr.ScanFSWithMetrics(context.TODO(), extrafs.OSDir(root), rel)
-	if err != nil {
-		panic(err)
-	}
-
-	factory := formatters.New().
-		WithDebugEnabled(false).
-		WithColoursEnabled(false).
-		WithGroupingEnabled(true).
-		WithLinksFunc(gatherLinks).
-		WithFSRoot(root).
-		WithBaseDir(rel).
-		WithMetricsEnabled(false).
-		WithIncludeIgnored(true).
-		WithIncludePassed(false).
-		WithRelativePaths(false).
-		AsJSON()
-
-	outputPath := dir + "/results.json"
-	fmt.Println("Saving scan to outputPath=%s", outputPath)
-
-	f, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		panic(err)
-	}
-	defer func() { _ = f.Close() }()
-
-	factory.WithWriter(f)
-	fmt.Println("Saved scan to outputPath=%s", outputPath)
-	factory.Build().Output(results)
-
-	return outputPath
-}
-
-func gatherLinks(result scan.Result) []string {
-	v := "latest"
-	if version.Version != "" {
-		v = version.Version
-	}
-	var links []string
-	if result.Rule().Terraform != nil {
-		links = result.Rule().Terraform.Links
-	}
-
-	var docsLink []string
-	if result.Rule().Provider == providers.CustomProvider {
-		docsLink = result.Rule().Links
-	} else {
-		docsLink = []string{
-			fmt.Sprintf(
-				"https://aquasecurity.github.io/tfsec/%s/checks/%s/%s/%s/",
-				v,
-				result.Rule().Provider,
-				strings.ToLower(result.Rule().Service),
-				result.Rule().ShortCode,
-			),
-		}
-	}
-
-	return append(docsLink, links...)
-}
-
-func findDirectory(p string) (string, error) {
-	dir, err := filepath.Abs(filepath.Clean(p))
-	if err != nil {
-		return "", fmt.Errorf("could not determine absolute path for provided path: %w", err)
-	}
-
-	if dirInfo, err := os.Stat(dir); err != nil {
-		return "", fmt.Errorf("failed to access provided path: %w", err)
-	} else if !dirInfo.IsDir() {
-		return "", fmt.Errorf("provided path is not a dir")
-	}
-
-	return dir, nil
-}
-
-func splitRoot(dir string) (string, string, error) {
-	root := "/"
-	var rel string
-	if vol := filepath.VolumeName(dir); vol != "" {
-		root = vol
-		if len(dir) <= len(vol)+1 {
-			rel = "."
-		} else {
-			rel = dir[len(vol)+1:]
-		}
-	} else {
-		var err error
-		rel, err = filepath.Rel(root, dir)
-		if err != nil {
-			return "", "", fmt.Errorf("failed to set relative path: %w", err)
-		}
-	}
-	return root, rel, nil
-}
-
-func GetAtlantisProjects(d string) []string {
 	var globalCfgArgs = valid.GlobalCfgArgs{
 		AllowRepoCfg:  true,
 		MergeableReq:  false,
@@ -283,7 +158,7 @@ func GetAtlantisProjects(d string) []string {
 	var globalCfg = valid.NewGlobalCfgFromArgs(globalCfgArgs)
 
 	parserValidator := config.ParserValidator{}
-	repoCfg, err := parserValidator.ParseRepoCfg(d, globalCfg, "")
+	repoCfg, err := parserValidator.ParseRepoCfg(repoDir.(string), globalCfg, "")
 
 	if err != nil {
 		panic(err)
@@ -296,12 +171,18 @@ func GetAtlantisProjects(d string) []string {
 	return allFiles
 }
 
-func RunCommenter(reportLocation string, o string, r string, pr int) {
+func RunCommenter(ctx *context.Context, reportLocation string) {
+	localCtx := *ctx
+	o := localCtx.Value("ghOrganization")
+	r := localCtx.Value("ghRepository")
+	pr := localCtx.Value("ghPR")
+	repoDir := localCtx.Value("repositoryDirectory")
+
 	loadedReport, err := loadReportFile(reportLocation)
 	if err != nil {
 		panic(err)
 	}
-	repo, err := ghcommenter.NewGithub(os.Getenv("GITHUB_TOKEN"), o, r, pr)
+	repo, err := ghcommenter.NewGithub(os.Getenv("GITHUB_TOKEN"), o.(string), r.(string), pr.(int))
 	if err != nil {
 		panic(err)
 	}
@@ -313,7 +194,7 @@ func RunCommenter(reportLocation string, o string, r string, pr int) {
 		reportItem.Range.Filename = reportItem.Range.Filename
 		comment := generateErrorMessage(reportItem)
 		fmt.Printf("Preparing comment for violation of rule %v in %v\n", reportItem.RuleID, reportItem.Range.Filename)
-		err := c.WriteMultiLineComment(strings.ReplaceAll(reportItem.Range.Filename, "/Users/aakatev/Documents/work/gh-utils/fake-terraform/", ""), comment, reportItem.Range.StartLine, reportItem.Range.EndLine)
+		err := c.WriteMultiLineComment(strings.ReplaceAll(reportItem.Range.Filename, repoDir.(string)+"/", ""), comment, reportItem.Range.StartLine, reportItem.Range.EndLine)
 		if err != nil {
 			// don't error if its simply that the comments aren't valid for the PR
 			switch err.(type) {
