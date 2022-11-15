@@ -5,11 +5,13 @@ Copyright © 2022 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"main/utils"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/exp/slices"
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -27,7 +29,29 @@ to quickly create a Cobra application.`,
 		organization, _ := cmd.Flags().GetString("organization")
 		repository, _ := cmd.Flags().GetString("repository")
 		commit, _ := cmd.Flags().GetString("commit")
-		utils.GetFileDiffs(organization, repository, commit)
+		pr := utils.GetPRNumber(organization, repository, commit)
+		diffs := utils.GetFileDiffs(organization, repository, pr)
+
+		// utils.GitClone(organization, repository, commit)
+
+		projects := utils.GetAtlantisProjects("./" + repository)
+		diffsProjects := []string{}
+
+		fmt.Println(projects)
+		fmt.Println(diffs)
+
+		for _, d := range diffs {
+			if slices.Contains(projects, d) {
+				diffsProjects = append(diffsProjects, d)
+			}
+		}
+		fmt.Println(diffsProjects)
+
+		for _, value := range diffsProjects {
+			reportFile := utils.RunScan(repository + "/" + value)
+			utils.RunCommenter(reportFile, organization, repository, pr)
+		}
+
 	},
 }
 
